@@ -13,8 +13,8 @@ dependencies:
   glob: ^2.0.1
   logging: ^1.0.1
   io: ^1.0.3
-  build_runner_core: ^7.0.0
-  build_runner: ^2.0.0
+  build_runner_core: ^7.2.9
+  build_runner: ^2.4.0
   path: ^1.8.0
 dev_dependencies:
   test: ^1.5.1
