@@ -2,23 +2,14 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-import 'dart:async';
+import 'dart:io';
 
-import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
-import 'package:build_runner/src/build_script_generate/build_script_generate.dart';
-import 'package:build_runner/src/entrypoint/base_command.dart' show lineLength;
-import 'package:build_runner/src/entrypoint/clean.dart' show cleanFor;
-import 'package:build_runner_core/build_runner_core.dart';
-import 'package:logging/logging.dart';
+import 'package:path/path.dart' as p;
 
 class CleanCommand extends Command<int> {
   @override
-  final argParser = ArgParser(usageLineLength: lineLength);
-
-  @override
   String get name => 'clean';
-  final logger = Logger('clean');
 
   @override
   String get description =>
@@ -27,7 +18,13 @@ class CleanCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    await cleanFor(assetGraphPathFor(scriptLocation), logger);
+    final cacheDir = Directory(p.join('.dart_tool', 'build'));
+    if (cacheDir.existsSync()) {
+      cacheDir.deleteSync(recursive: true);
+      stdout.writeln('Deleted ${cacheDir.path}');
+    } else {
+      stdout.writeln('Nothing to clean.');
+    }
     return 0;
   }
 }

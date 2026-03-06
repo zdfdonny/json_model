@@ -2,20 +2,14 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-import 'dart:async';
 import 'dart:io';
 
-import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
-import 'package:build_runner/src/build_script_generate/build_script_generate.dart';
-import 'package:build_runner/src/entrypoint/base_command.dart' show lineLength;
-import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 
-class GenerateBuildScript extends Command<int> {
-  @override
-  final argParser = ArgParser(usageLineLength: lineLength);
+const scriptLocation = '.dart_tool/build/entrypoint/build.dart';
 
+class GenerateBuildScript extends Command<int> {
   @override
   String get description =>
       'Generate a script to run builds and print the file path '
@@ -29,12 +23,16 @@ class GenerateBuildScript extends Command<int> {
 
   @override
   Future<int> run() async {
-    Logger.root.clearListeners();
-    var buildScript = await generateBuildScript();
-    File(scriptLocation)
-      ..createSync(recursive: true)
-      ..writeAsStringSync(buildScript);
-    print(p.absolute(scriptLocation));
-    return 0;
+    final result = await Process.run(
+      Platform.resolvedExecutable,
+      ['run', 'build_runner', 'generate-build-script'],
+      runInShell: true,
+    );
+    stdout.write(result.stdout);
+    stderr.write(result.stderr);
+    if (result.exitCode == 0) {
+      print(p.absolute(scriptLocation));
+    }
+    return result.exitCode;
   }
 }

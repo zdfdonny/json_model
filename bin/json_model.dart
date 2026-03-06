@@ -203,7 +203,9 @@ _writeComments(dynamic comments, StringBuffer sb) {
 }
 
 String exportIndexFile(String p, String distDir, String indexFile) {
-  final relative = p.replaceFirst(distDir + path.separator, "");
+  final relative = p
+      .replaceFirst(distDir + path.separator, "")
+      .replaceAll(path.separator, '/');
   indexFile += "export '$relative' ; \n";
   return indexFile;
 }

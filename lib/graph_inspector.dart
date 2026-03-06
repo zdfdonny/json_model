@@ -3,22 +3,18 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:args/command_runner.dart';
-import 'package:build/build.dart';
-import 'package:build_runner_core/build_runner_core.dart';
-import 'package:build_runner_core/src/asset_graph/graph.dart';
-import 'package:build_runner_core/src/asset_graph/node.dart';
 import 'package:glob/glob.dart';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 
-late final AssetGraph assetGraph;
-late final PackageGraph packageGraph;
-
 final logger = Logger('graph_inspector');
+
+const _assetGraphPath = '.dart_tool/build/asset_graph.json';
 
 Future<void> main(List<String> args) async {
   final logSubscription =
@@ -42,19 +38,25 @@ Future<void> main(List<String> args) async {
         'Expected exactly one of `--graph-file` or `--build-script`.');
   }
 
-  var assetGraphFile = File(_findAssetGraph(results));
+  final graphFilePath = results.wasParsed('graph-file')
+      ? results['graph-file'] as String
+      : _assetGraphPath;
+
+  final assetGraphFile = File(graphFilePath);
   if (!assetGraphFile.existsSync()) {
-    throw ArgumentError('Unable to find AssetGraph.');
+    throw ArgumentError(
+        'Unable to find asset graph at $graphFilePath. '
+        'Run `dart run build_runner build` first.');
   }
   stdout.writeln('Loading asset graph at ${assetGraphFile.path}...');
 
-  assetGraph = AssetGraph.deserialize(assetGraphFile.readAsBytesSync());
-  packageGraph = await PackageGraph.forThisPackage();
+  final Map<String, dynamic> assetGraph =
+      json.decode(assetGraphFile.readAsStringSync()) as Map<String, dynamic>;
 
-  var commandRunner = CommandRunner<bool>(
+  final commandRunner = CommandRunner<bool>(
       '', 'A tool for inspecting the AssetGraph for your build')
-    ..addCommand(InspectNodeCommand())
-    ..addCommand(GraphCommand())
+    ..addCommand(InspectNodeCommand(assetGraph))
+    ..addCommand(GraphCommand(assetGraph))
     ..addCommand(QuitCommand());
 
   stdout.writeln('Ready, please type in a command:');
@@ -64,7 +66,7 @@ Future<void> main(List<String> args) async {
     stdout
       ..writeln('')
       ..write('> ');
-    var nextCommand = stdin.readLineSync();
+    final nextCommand = stdin.readLineSync();
     stdout.writeln('');
     try {
       shouldExit = await commandRunner.run(nextCommand!.split(' ')) ?? true;
@@ -76,18 +78,13 @@ Future<void> main(List<String> args) async {
   await logSubscription.cancel();
 }
 
-String _findAssetGraph(ArgResults results) {
-  if (results.wasParsed('graph-file')) return results['graph-file'] as String;
-  final scriptPath = results['build-script'] as String;
-  final scriptFile = File(scriptPath);
-  if (!scriptFile.existsSync()) {
-    throw ArgumentError(
-        'Expected a build script at $scriptPath but didn\'t find one.');
-  }
-  return assetGraphPathFor(p.url.joinAll(p.split(scriptPath)));
-}
-
 class InspectNodeCommand extends Command<bool> {
+  final Map<String, dynamic> assetGraph;
+
+  InspectNodeCommand(this.assetGraph) {
+    argParser.addFlag('verbose', abbr: 'v');
+  }
+
   @override
   String get name => 'inspect';
 
@@ -98,59 +95,30 @@ class InspectNodeCommand extends Command<bool> {
   @override
   String get invocation => '${super.invocation} <dart-uri>';
 
-  InspectNodeCommand() {
-    argParser.addFlag('verbose', abbr: 'v');
-  }
-
   @override
   bool run() {
-    var argResults = this.argResults!;
-    var stringUris = argResults.rest;
+    final argResults = this.argResults!;
+    final stringUris = argResults.rest;
     if (stringUris.isEmpty) {
       stderr.writeln('Expected at least one uri for a node to inspect.');
     }
-    for (var stringUri in stringUris) {
-      var id = _idFromString(stringUri);
-      if (id == null) {
-        continue;
-      }
-      var node = assetGraph.get(id);
+    final nodes = assetGraph['nodes'] as List? ?? [];
+    for (final stringUri in stringUris) {
+      final node = nodes.firstWhere(
+        (n) => n is Map && n['id'] == stringUri,
+        orElse: () => null,
+      );
       if (node == null) {
         stderr.writeln('Unable to find an asset node for $stringUri.');
         continue;
       }
-
-      var description = StringBuffer()
+      final description = StringBuffer()
         ..writeln('Asset: $stringUri')
-        ..writeln('  type: ${node.runtimeType}');
-
-      if (node is GeneratedAssetNode) {
-        description
-          ..writeln('  state: ${node.state}')
-          ..writeln('  wasOutput: ${node.wasOutput}')
-          ..writeln('  phase: ${node.phaseNumber}')
-          ..writeln('  isFailure: ${node.isFailure}');
-      }
-
-      void _printAsset(AssetId asset) =>
-          _listAsset(asset, description, indentation: '    ');
+        ..writeln('  type: ${node['type'] ?? 'unknown'}');
 
       if (argResults['verbose'] == true) {
-        description.writeln('  primary outputs:');
-        node.primaryOutputs.forEach(_printAsset);
-
-        description.writeln('  secondary outputs:');
-        node.outputs.difference(node.primaryOutputs).forEach(_printAsset);
-
-        if (node is NodeWithInputs) {
-          description.writeln('  inputs:');
-          assetGraph.allNodes
-              .where((n) => n.outputs.contains(node.id))
-              .map((n) => n.id)
-              .forEach(_printAsset);
-        }
+        description.writeln('  details: ${json.encode(node)}');
       }
-
       stdout.write(description);
     }
     return false;
@@ -158,16 +126,9 @@ class InspectNodeCommand extends Command<bool> {
 }
 
 class GraphCommand extends Command<bool> {
-  @override
-  String get name => 'graph';
+  final Map<String, dynamic> assetGraph;
 
-  @override
-  String get description => 'Lists all the nodes in the graph.';
-
-  @override
-  String get invocation => '${super.invocation} <dart-uri>';
-
-  GraphCommand() {
+  GraphCommand(this.assetGraph) {
     argParser
       ..addFlag('generated',
           abbr: 'g', help: 'Show only generated assets.', defaultsTo: false)
@@ -181,32 +142,51 @@ class GraphCommand extends Command<bool> {
   }
 
   @override
+  String get name => 'graph';
+
+  @override
+  String get description => 'Lists all the nodes in the graph.';
+
+  @override
+  String get invocation => '${super.invocation} <dart-uri>';
+
+  @override
   bool run() {
-    var argResults = this.argResults!;
-    var showGenerated = argResults['generated'] as bool;
-    var showSources = argResults['original'] as bool;
-    Iterable<AssetId> assets;
+    final argResults = this.argResults!;
+    final showGenerated = argResults['generated'] as bool;
+    final showSources = argResults['original'] as bool;
+    final nodes = (assetGraph['nodes'] as List? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+
+    Iterable<Map<String, dynamic>> filtered = nodes;
     if (showGenerated) {
-      assets = assetGraph.outputs;
+      filtered = filtered.where((n) => n['isGenerated'] == true);
     } else if (showSources) {
-      assets = assetGraph.sources;
-    } else {
-      assets = assetGraph.allNodes.map((n) => n.id);
+      filtered = filtered.where((n) => n['isGenerated'] != true);
     }
 
-    var package = argResults['package'] as String?;
+    final package = argResults['package'] as String?;
     if (package != null) {
-      assets = assets.where((id) => id.package == package);
+      filtered = filtered.where((n) {
+        final id = n['id'] as String?;
+        return id != null && id.startsWith('$package|');
+      });
     }
 
-    var pattern = argResults['pattern'] as String?;
+    final pattern = argResults['pattern'] as String?;
+    Glob? glob;
     if (pattern != null) {
-      var glob = Glob(pattern);
-      assets = assets.where((id) => glob.matches(id.path));
+      glob = Glob(pattern);
     }
 
-    for (var id in assets) {
-      _listAsset(id, stdout, indentation: '  ');
+    for (final node in filtered) {
+      final id = node['id'] as String? ?? 'unknown';
+      if (glob != null) {
+        final path = id.contains('|') ? id.split('|').last : id;
+        if (!glob.matches(path)) continue;
+      }
+      _listNode(id, stdout);
     }
     return false;
   }
@@ -223,26 +203,15 @@ class QuitCommand extends Command<bool> {
   bool run() => true;
 }
 
-AssetId? _idFromString(String stringUri) {
-  var uri = Uri.parse(stringUri);
-  if (uri.scheme == 'package') {
-    return AssetId(uri.pathSegments.first,
-        p.url.join('lib', p.url.joinAll(uri.pathSegments.skip(1))));
-  } else if (!uri.isAbsolute && (uri.scheme == '' || uri.scheme == 'file')) {
-    return AssetId(packageGraph.root.name, uri.path);
+void _listNode(String id, StringSink buffer, {String indentation = '  '}) {
+  if (id.startsWith('package:') || id.contains('|')) {
+    final parts = id.split('|');
+    if (parts.length == 2) {
+      buffer.writeln('${indentation}package:${parts[0]}/${parts[1]}');
+    } else {
+      buffer.writeln('$indentation$id');
+    }
   } else {
-    stderr.writeln('Unrecognized uri $uri, must be a package: uri or a '
-        'relative path.');
-    return null;
-  }
-}
-
-void _listAsset(AssetId output, StringSink buffer,
-    {String indentation = '  '}) {
-  var outputUri = output.uri;
-  if (outputUri.scheme == 'package') {
-    buffer.writeln('$indentation${output.uri}');
-  } else {
-    buffer.writeln('$indentation${output.path}');
+    buffer.writeln('$indentation${p.normalize(id)}');
   }
 }
